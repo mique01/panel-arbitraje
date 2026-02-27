@@ -64,6 +64,14 @@ def best_punta_from_iol_quote(js: dict):
         pv = ventas[0].get("precio")  if ventas  and isinstance(ventas[0], dict)  else None
         return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
 
+    # Caso 1b (IOL común): puntas es lista con un objeto mejor punta
+    # [{"precioCompra": ..., "precioVenta": ..., ...}]
+    if isinstance(puntas, list) and puntas and isinstance(puntas[0], dict):
+        top = puntas[0]
+        pc = top.get("precioCompra") or top.get("PrecioCompra") or top.get("bid") or top.get("Bid")
+        pv = top.get("precioVenta") or top.get("PrecioVenta") or top.get("ask") or top.get("Ask")
+        return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
+
     # Caso 2: viene directo tipo { "precioCompra":..., "precioVenta":... }
     pc = js.get("precioCompra") or js.get("PrecioCompra") or js.get("bid") or js.get("Bid")
     pv = js.get("precioVenta") or js.get("PrecioVenta") or js.get("ask") or js.get("Ask")
@@ -95,6 +103,8 @@ class IOLClient:
         self.session = requests.Session()
         self.token = None
         self.token_expires_at = 0
+        self.username = None
+        self.password = None
 
     def login(self, username: str, password: str):
         """
@@ -111,6 +121,8 @@ class IOLClient:
         r.raise_for_status()
         js = r.json()
         self.token = js["access_token"]
+        self.username = username
+        self.password = password
         expires_in = js.get("expires_in", 900)
         self.token_expires_at = time.time() + int(expires_in) - 30
 
@@ -126,10 +138,13 @@ class IOLClient:
         En muchos ejemplos de IOL:
         /api/v2/Cotizaciones/{mercado}/Titulos/{ticker}/Cotizacion?plazo=...
         """
-        # plazo: "t0" / "t1"
+        # plazo: "T0" / "T1"
         # mercado: "bCBA" para BYMA (ejemplo)
+        if (not self.is_logged()) and self.username and self.password:
+            self.login(self.username, self.password)
+
         url = f"{self.base}/api/v2/Cotizaciones/{mercado}/Titulos/{ticker}/Cotizacion"
-        params = {"plazo": plazo}
+        params = {"plazo": plazo.upper()}
         r = self.session.get(url, params=params, timeout=20)
         r.raise_for_status()
         return r.json()
@@ -143,7 +158,7 @@ iol = IOLClient()
 # Widgets
 w_user = pn.widgets.TextInput(name="Usuario IOL", placeholder="tu_mail@...")
 w_pass = pn.widgets.PasswordInput(name="Password IOL", placeholder="********")
-w_spread_min = pn.widgets.FloatInput(name="Spread mínimo (%)", value=0.0, step=0.1)
+w_spread_min = pn.widgets.FloatInput(name="Spread mínimo (%)", value=0.5, step=0.1)
 w_refresh = pn.widgets.IntInput(name="Refresh (seg)", value=60, step=5)
 w_autorefresh = pn.widgets.Switch(name="Auto refresh", value=True)
 
@@ -163,7 +178,7 @@ progress = pn.widgets.Progress(name="Progreso", value=0, max=100, visible=False)
 
 # Tabla
 table = pn.widgets.Tabulator(
-    pd.DataFrame(columns=["Ticker", "Ask t0", "Bid t1", "Spread %", "Moneda", "Error"]),
+    pd.DataFrame(columns=["Ticker", "Ask t0", "Bid t1", "Spread %", "Compra t0", "Venta t1", "Moneda", "Error"]),
     height=360,
     pagination="local",
     page_size=20,
@@ -234,6 +249,8 @@ def update_quotes(event=None):
             "Ask t0": ask_t0,
             "Bid t1": bid_t1,
             "Spread %": None if spread_pct is None else round(spread_pct, 2),
+            "Compra t0": "✅" if spread_pct is not None else "",
+            "Venta t1": "✅" if spread_pct is not None else "",
             "Moneda": moneda,
             "Error": err_msg
         })

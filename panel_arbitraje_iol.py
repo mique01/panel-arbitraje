@@ -181,10 +181,11 @@ progress = pn.widgets.Progress(name="Progreso", value=0, max=100, visible=False)
 
 # Tabla
 table = pn.widgets.Tabulator(
-    pd.DataFrame(columns=["Ticker", "Ask t0", "Bid t1", "Spread %", "Compra t0", "Venta t1", "Moneda", "Error"]),
+    pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda"]),
     height=360,
     pagination="local",
     page_size=20,
+    show_index=False,
     sizing_mode="stretch_width",
 )
 
@@ -248,14 +249,11 @@ def update_quotes(event=None):
             err_msg = f"{type(e).__name__}"
 
         rows.append({
-            "Ticker": t,
-            "Ask t0": ask_t0,
-            "Bid t1": bid_t1,
-            "Spread %": None if spread_pct is None else round(spread_pct, 2),
-            "Compra t0": "✅" if spread_pct is not None else "",
-            "Venta t1": "✅" if spread_pct is not None else "",
+            "Activo": t,
+            "Ask T0": ask_t0,
+            "Bid T1": bid_t1,
+            "Spread %": spread_pct,
             "Moneda": moneda,
-            "Error": err_msg
         })
 
         progress.value = i  # barra real
@@ -267,9 +265,10 @@ def update_quotes(event=None):
     df2["Spread %"] = pd.to_numeric(df2["Spread %"], errors="coerce")
     df2 = df2[df2["Spread %"].notna()]
     df2 = df2[df2["Spread %"] >= spread_min]
+    df2["Spread %"] = df2["Spread %"].round(2)
     df2 = df2.sort_values("Spread %", ascending=False)
 
-    table.value = df2.reset_index(drop=True)
+    table.value = df2[["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda"]].reset_index(drop=True)
 
     progress.visible = False
     spinner.value = False

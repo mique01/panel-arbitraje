@@ -1,4 +1,5 @@
 # app.py
+import os
 import time
 import re
 import requests
@@ -158,6 +159,8 @@ iol = IOLClient()
 # Widgets
 w_user = pn.widgets.TextInput(name="Usuario IOL", placeholder="tu_mail@...")
 w_pass = pn.widgets.PasswordInput(name="Password IOL", placeholder="********")
+w_user.value = os.getenv("IOL_USER", "")
+w_pass.value = os.getenv("IOL_PASS", "")
 w_spread_min = pn.widgets.FloatInput(name="Spread mínimo (%)", value=0.5, step=0.1)
 w_refresh = pn.widgets.IntInput(name="Refresh (seg)", value=60, step=5)
 w_autorefresh = pn.widgets.Switch(name="Auto refresh", value=True)
@@ -169,6 +172,7 @@ w_tickers = pn.widgets.TextAreaInput(
 )
 
 btn_connect = pn.widgets.Button(name="Conectar", button_type="primary")
+btn_disconnect = pn.widgets.Button(name="Desconectar", button_type="warning")
 btn_update = pn.widgets.Button(name="Actualizar ahora", button_type="success")
 
 # Indicadores
@@ -178,10 +182,11 @@ progress = pn.widgets.Progress(name="Progreso", value=0, max=100, visible=False)
 
 # Tabla
 table = pn.widgets.Tabulator(
-    pd.DataFrame(columns=["Ticker", "Ask t0", "Bid t1", "Spread %", "Compra t0", "Venta t1", "Moneda", "Error"]),
+    pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda"]),
     height=360,
     pagination="local",
     page_size=20,
+    show_index=False,
     sizing_mode="stretch_width",
 )
 
@@ -198,6 +203,26 @@ def connect(event=None):
         status.object = f"🔴 **Error de login:** `{type(e).__name__}`"
     finally:
         spinner.value = False
+
+
+def disconnect(event=None):
+    global _auto_cb
+    w_autorefresh.value = False
+    if _auto_cb is not None:
+        try:
+            pn.state.remove_periodic_callback(_auto_cb)
+        except Exception:
+            pass
+        _auto_cb = None
+
+    iol.token = None
+    iol.token_expires_at = 0
+    iol.session.headers.pop("Authorization", None)
+
+    status.object = "🔴 **Desconectado**"
+    spinner.value = False
+    progress.visible = False
+    table.value = pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda"])
 
 def update_quotes(event=None):
     tickers = parse_tickers(w_tickers.value)
@@ -221,7 +246,6 @@ def update_quotes(event=None):
 
     for i, t in enumerate(tickers, start=1):
         status.object = f"⏳ **Procesando {t} ({i}/{len(tickers)})…**"
-        err_msg = None
         ask_t0 = None
         bid_t1 = None
         moneda = None
@@ -241,18 +265,15 @@ def update_quotes(event=None):
             if ask_t0 is not None and bid_t1 is not None and ask_t0 > 0:
                 spread_pct = (bid_t1 / ask_t0 - 1) * 100
 
-        except Exception as e:
-            err_msg = f"{type(e).__name__}"
+        except Exception:
+            pass
 
         rows.append({
-            "Ticker": t,
-            "Ask t0": ask_t0,
-            "Bid t1": bid_t1,
-            "Spread %": None if spread_pct is None else round(spread_pct, 2),
-            "Compra t0": "✅" if spread_pct is not None else "",
-            "Venta t1": "✅" if spread_pct is not None else "",
+            "Activo": t,
+            "Ask T0": ask_t0,
+            "Bid T1": bid_t1,
+            "Spread %": spread_pct,
             "Moneda": moneda,
-            "Error": err_msg
         })
 
         progress.value = i  # barra real
@@ -264,9 +285,10 @@ def update_quotes(event=None):
     df2["Spread %"] = pd.to_numeric(df2["Spread %"], errors="coerce")
     df2 = df2[df2["Spread %"].notna()]
     df2 = df2[df2["Spread %"] >= spread_min]
+    df2["Spread %"] = df2["Spread %"].round(2)
     df2 = df2.sort_values("Spread %", ascending=False)
 
-    table.value = df2.reset_index(drop=True)
+    table.value = df2[["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda"]].reset_index(drop=True)
 
     progress.visible = False
     spinner.value = False
@@ -294,6 +316,7 @@ def set_autorefresh(event=None):
 
 # Bind events
 btn_connect.on_click(connect)
+btn_disconnect.on_click(disconnect)
 btn_update.on_click(update_quotes)
 w_autorefresh.param.watch(set_autorefresh, "value")
 w_refresh.param.watch(set_autorefresh, "value")
@@ -310,7 +333,7 @@ left = pn.Column(
     w_refresh,
     w_autorefresh,
     w_tickers,
-    pn.Row(btn_connect, btn_update),
+    pn.Row(btn_connect, btn_disconnect, btn_update),
     width=380,
 )
 

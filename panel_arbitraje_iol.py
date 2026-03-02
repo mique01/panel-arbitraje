@@ -1,3 +1,4 @@
+# app.py
 import os
 import time
 import re
@@ -7,15 +8,26 @@ import panel as pn
 
 pn.extension("tabulator")
 
-
+# =========================
+# Helpers
+# =========================
 def parse_tickers(text: str):
+    """
+    Lee tickers desde un TextArea (uno por línea).
+    Soporta separadores: \n, \r\n, coma, punto y coma, tab.
+    Limpia espacios y elimina vacíos/duplicados preservando orden.
+    """
     if not text:
         return []
+    # separa por saltos o comas/; tabs
     raw = re.split(r"[\n\r,;\t]+", text.strip())
-    out, seen = [], set()
+    out = []
+    seen = set()
     for x in raw:
         t = x.strip().upper()
-        if t and t not in seen:
+        if not t:
+            continue
+        if t not in seen:
             seen.add(t)
             out.append(t)
     return out
@@ -31,79 +43,69 @@ def safe_float(x, default=None):
     except Exception:
         return default
 
-
-def one_line(text, max_len=180):
-    if text is None:
-        return ""
-    return str(text).replace("\n", " ").replace("\r", " ")[:max_len]
-
-
-def best_punta_from_iol_quote(resp: dict):
+def best_punta_from_iol_quote(js: dict):
     """
-    Recibe respuesta estándar de get_quote() y devuelve:
-    - precioCompra, precioVenta, moneda
-    - cantidadCompra, cantidadVenta
-    - hint
+    Intenta sacar mejor punta compra/venta desde distintas estructuras posibles.
+    Devuelve dict con:
+      - precioCompra
+      - precioVenta
+      - moneda (si existe)
+    Ajustá esta función si tu JSON viene distinto.
     """
-    if not isinstance(resp, dict):
-        return {
-            "precioCompra": None,
-            "precioVenta": None,
-            "cantidadCompra": None,
-            "cantidadVenta": None,
-            "moneda": None,
-            "hint": "Respuesta inválida",
-        }
-
-    if not resp.get("ok"):
-        sc = resp.get("status_code")
-        txt = one_line(resp.get("text"))
-        hint = f"HTTP {sc}" + (f" - {txt}" if txt else "")
-        return {
-            "precioCompra": None,
-            "precioVenta": None,
-            "cantidadCompra": None,
-            "cantidadVenta": None,
-            "moneda": None,
-            "hint": hint,
-        }
-
-    js = resp.get("json")
     if not isinstance(js, dict):
-        return {
-            "precioCompra": None,
-            "precioVenta": None,
-            "cantidadCompra": None,
-            "cantidadVenta": None,
-            "moneda": None,
-            "hint": "JSON vacío / estructura desconocida",
-        }
+        return {"precioCompra": None, "precioVenta": None, "moneda": None}
 
     moneda = js.get("moneda") or js.get("Moneda")
-    puntas = js.get("puntas")
 
+    # Caso 0: viene directo tipo {"precioCompra":..., "precioVenta":...}
+    pc = safe_float(js.get("precioCompra") or js.get("PrecioCompra") or js.get("bid") or js.get("Bid"), None)
+    pv = safe_float(js.get("precioVenta") or js.get("PrecioVenta") or js.get("ask") or js.get("Ask"), None)
+    if pc is not None or pv is not None:
+        return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
+
+    # Caso 1: viene algo tipo { ... "puntas": {"compra":[...], "venta":[...] } }
+    puntas = js.get("puntas") or js.get("Puntas")
+    if isinstance(puntas, dict):
+        compras = puntas.get("compra") or puntas.get("Compra") or []
+        ventas  = puntas.get("venta")  or puntas.get("Venta")  or []
+        pc = safe_float(compras[0].get("precio") if compras and isinstance(compras[0], dict) else None, None)
+        pv = safe_float(ventas[0].get("precio")  if ventas  and isinstance(ventas[0], dict)  else None, None)
+        return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
+
+    # Caso 1b (IOL común): puntas es lista con un objeto mejor punta
+    # [{"precioCompra": ..., "precioVenta": ..., ...}]
     if isinstance(puntas, list) and puntas and isinstance(puntas[0], dict):
         top = puntas[0]
-        return {
-            "precioCompra": safe_float(top.get("precioCompra"), None),
-            "precioVenta": safe_float(top.get("precioVenta"), None),
-            "cantidadCompra": safe_float(top.get("cantidadCompra"), None),
-            "cantidadVenta": safe_float(top.get("cantidadVenta"), None),
-            "moneda": moneda,
-            "hint": "OK",
-        }
+        pc = safe_float(top.get("precioCompra") or top.get("PrecioCompra") or top.get("bid") or top.get("Bid"), None)
+        pv = safe_float(top.get("precioVenta") or top.get("PrecioVenta") or top.get("ask") or top.get("Ask"), None)
+        return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
 
-    return {
-        "precioCompra": None,
-        "precioVenta": None,
-        "cantidadCompra": None,
-        "cantidadVenta": None,
-        "moneda": moneda,
-        "hint": "JSON sin puntas válidas",
-    }
+    # Caso 2: viene directo tipo { "precioCompra":..., "precioVenta":... }
+    pc = js.get("precioCompra") or js.get("PrecioCompra") or js.get("bid") or js.get("Bid")
+    pv = js.get("precioVenta") or js.get("PrecioVenta") or js.get("ask") or js.get("Ask")
+    if pc is not None or pv is not None:
+        return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
+
+    # Caso 3: viene en "cotizacion" o similar
+    cot = js.get("cotizacion") or js.get("Cotizacion")
+    if isinstance(cot, dict):
+        pc = cot.get("precioCompra") or cot.get("PrecioCompra") or cot.get("bid") or cot.get("Bid")
+        pv = cot.get("precioVenta") or cot.get("PrecioVenta") or cot.get("ask") or cot.get("Ask")
+        moneda = moneda or cot.get("moneda") or cot.get("Moneda")
+        return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
+
+    return {"precioCompra": None, "precioVenta": None, "moneda": moneda}
 
 
+# =========================
+# IOL Client (reemplazable)
+# =========================
 class IOLClient:
+    """
+    Cliente mínimo para IOL.
+    Si vos ya tenés tu wrapper funcionando, podés borrar esta clase
+    y reemplazar las llamadas en `get_quote()` por las tuyas.
+    """
     def __init__(self):
         self.base = "https://api.invertironline.com"
         self.session = requests.Session()
@@ -127,6 +129,7 @@ class IOLClient:
         self.password = password
         expires_in = js.get("expires_in", 900)
         self.token_expires_at = time.time() + int(expires_in) - 30
+
         self.session.headers.update({"Authorization": f"Bearer {self.token}"})
 
     def is_logged(self):
@@ -173,20 +176,18 @@ class IOLClient:
         if (not self.is_logged()) and self.username and self.password:
             self.login(self.username, self.password)
 
-        r1 = self._request_quote(ticker=ticker, mercado=mercado, plazo_norm=plazo_norm)
-        r1["fallback_used"] = False
-
-        if r1.get("status_code") in {400, 404} and mercado == "bCBA":
-            r2 = self._request_quote(ticker=ticker, mercado="BCBA", plazo_norm=plazo_norm)
-            r2["fallback_used"] = True
-            r2["fallback_from"] = "bCBA"
-            return r2
-
-        return r1
+        url = f"{self.base}/api/v2/{mercado}/Titulos/{ticker}/CotizacionDetalleMobile/{plazo_num}"
+        r = self.session.get(url, timeout=20)
+        r.raise_for_status()
+        return r.json()
 
 
+# =========================
+# Panel UI
+# =========================
 iol = IOLClient()
 
+# Widgets
 w_user = pn.widgets.TextInput(name="Usuario IOL", placeholder="tu_mail@...")
 w_pass = pn.widgets.PasswordInput(name="Password IOL", placeholder="********")
 w_user.value = os.getenv("IOL_USER", "")
@@ -196,6 +197,14 @@ w_refresh = pn.widgets.IntInput(name="Refresh (seg)", value=60, step=1, start=3)
 w_autorefresh = pn.widgets.Switch(name="Auto refresh", value=True)
 
 w_tickers = pn.widgets.TextAreaInput(name="Tickers (uno por línea)", value="AL30\nGD30", height=220)
+w_refresh = pn.widgets.IntInput(name="Refresh (seg)", value=60, step=5)
+w_autorefresh = pn.widgets.Switch(name="Auto refresh", value=True)
+
+w_tickers = pn.widgets.TextAreaInput(
+    name="Tickers (uno por línea)",
+    value="AL30\nGD30",
+    height=220
+)
 
 btn_connect = pn.widgets.Button(name="Conectar", button_type="primary")
 btn_disconnect = pn.widgets.Button(name="Desconectar", button_type="warning")
@@ -205,13 +214,9 @@ status = pn.pane.Markdown("🔴 **Desconectado**")
 spinner = pn.indicators.LoadingSpinner(value=False, size=24)
 progress = pn.widgets.Progress(name="Progreso", value=0, max=100, visible=False)
 
-TABLE_COLUMNS = [
-    "Activo", "Ask T0", "Bid T1", "Spread %", "Moneda",
-    "QtyAskT0", "QtyBidT1", "HTTP_T0", "HTTP_T1", "Hint_T0", "Hint_T1"
-]
-
+# Tabla
 table = pn.widgets.Tabulator(
-    pd.DataFrame(columns=TABLE_COLUMNS),
+    pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda"]),
     height=360,
     pagination="local",
     page_size=20,
@@ -219,9 +224,9 @@ table = pn.widgets.Tabulator(
     sizing_mode="stretch_width",
 )
 
-last_error = pn.pane.Markdown("**Último error:** _(sin errores todavía)_", sizing_mode="stretch_width")
-
-
+# =========================
+# Logic
+# =========================
 def connect(event=None):
     spinner.value = True
     status.object = "⏳ **Conectando a IOL…**"
@@ -251,8 +256,7 @@ def disconnect(event=None):
     status.object = "🔴 **Desconectado**"
     spinner.value = False
     progress.visible = False
-    table.value = pd.DataFrame(columns=TABLE_COLUMNS)
-
+    table.value = pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda", "Error", "Debug"])
 
 def update_quotes(event=None):
     tickers = parse_tickers(w_tickers.value)
@@ -321,49 +325,32 @@ def update_quotes(event=None):
             "Bid T1": bid_t1,
             "Spread %": spread_pct,
             "Moneda": moneda,
-            "QtyAskT0": qty_ask_t0,
-            "QtyBidT1": qty_bid_t1,
-            "HTTP_T0": r_t0.get("status_code"),
-            "HTTP_T1": r_t1.get("status_code"),
-            "Hint_T0": hint_t0,
-            "Hint_T1": hint_t1,
-            "_SpreadRaw": spread_pct,
         })
 
-        progress.value = i
+        progress.value = i  # barra real
 
-    df_all = pd.DataFrame(rows)
-    df_all["_SpreadRaw"] = pd.to_numeric(df_all["_SpreadRaw"], errors="coerce")
-    df_all["Spread %"] = df_all["_SpreadRaw"].round(2)
-    df_all = df_all.sort_values("_SpreadRaw", ascending=False, na_position="last")
+    df = pd.DataFrame(rows)
 
-    table.value = df_all[TABLE_COLUMNS].reset_index(drop=True)
+    # Filtrado por spread mínimo (si Spread % es None => queda afuera)
+    df2 = df.copy()
+    df2["Spread %"] = pd.to_numeric(df2["Spread %"], errors="coerce")
+    df2 = df2[df2["Spread %"].notna()]
+    df2 = df2[df2["Spread %"] >= spread_min]
+    df2["Spread %"] = df2["Spread %"].round(2)
+    df2 = df2.sort_values("Spread %", ascending=False)
 
-    df_opps = df_all[(df_all["_SpreadRaw"].notna()) & (df_all["_SpreadRaw"] >= spread_min)]
-
-    if last_fail is not None:
-        last_error.object = (
-            "**Último error:**  "
-            f"ticker=`{last_fail['ticker']}` | plazo=`{last_fail['plazo']}` | "
-            f"status=`{last_fail['status_code']}`  \n"
-            f"url=`{last_fail['url']}`  \n"
-            f"text=`{one_line(last_fail.get('text'), 250)}`  \n"
-            f"json_keys=`{last_fail.get('json_keys')}`"
-        )
+    table.value = df2[["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda"]].reset_index(drop=True)
 
     progress.visible = False
     spinner.value = False
-    status.object = (
-        f"✅ **Actualizado** — {len(df_opps)} oportunidades (min {spread_min:.4f}%) | "
-        f"Total tickers: {len(df_all)}"
-    )
+    status.object = f"✅ **Actualizado** — {len(df2)} oportunidades (min {spread_min:.2f}%)"
 
-
+# Auto refresh callback
 _auto_cb = None
-
 
 def set_autorefresh(event=None):
     global _auto_cb
+    # limpia callback anterior
     if _auto_cb is not None:
         try:
             pn.state.remove_periodic_callback(_auto_cb)
@@ -378,13 +365,13 @@ def set_autorefresh(event=None):
     else:
         status.object = "🟢 **Auto refresh desactivado**"
 
-
+# Bind events
 btn_connect.on_click(connect)
-btn_disconnect.on_click(disconnect)
 btn_update.on_click(update_quotes)
 w_autorefresh.param.watch(set_autorefresh, "value")
 w_refresh.param.watch(set_autorefresh, "value")
 
+# Layout
 left = pn.Column(
     pn.pane.Markdown("## 🔎 Arbitraje CI → 24hs (IOL)"),
     pn.Row(status, spinner),
@@ -400,7 +387,9 @@ left = pn.Column(
     width=380,
 )
 
-right = pn.Column(table, last_error, sizing_mode="stretch_width")
-app = pn.Row(left, right, sizing_mode="stretch_width")
+app = pn.Row(left, table, sizing_mode="stretch_width")
 
+# Inicializa auto-refresh si está activado
 pn.state.onload(lambda: set_autorefresh())
+
+app.servable()

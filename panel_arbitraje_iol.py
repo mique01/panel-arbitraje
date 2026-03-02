@@ -56,21 +56,27 @@ def best_punta_from_iol_quote(js: dict):
 
     moneda = js.get("moneda") or js.get("Moneda")
 
+    # Caso 0: viene directo tipo {"precioCompra":..., "precioVenta":...}
+    pc = safe_float(js.get("precioCompra") or js.get("PrecioCompra") or js.get("bid") or js.get("Bid"), None)
+    pv = safe_float(js.get("precioVenta") or js.get("PrecioVenta") or js.get("ask") or js.get("Ask"), None)
+    if pc is not None or pv is not None:
+        return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
+
     # Caso 1: viene algo tipo { ... "puntas": {"compra":[...], "venta":[...] } }
     puntas = js.get("puntas") or js.get("Puntas")
     if isinstance(puntas, dict):
         compras = puntas.get("compra") or puntas.get("Compra") or []
         ventas  = puntas.get("venta")  or puntas.get("Venta")  or []
-        pc = compras[0].get("precio") if compras and isinstance(compras[0], dict) else None
-        pv = ventas[0].get("precio")  if ventas  and isinstance(ventas[0], dict)  else None
+        pc = safe_float(compras[0].get("precio") if compras and isinstance(compras[0], dict) else None, None)
+        pv = safe_float(ventas[0].get("precio")  if ventas  and isinstance(ventas[0], dict)  else None, None)
         return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
 
     # Caso 1b (IOL común): puntas es lista con un objeto mejor punta
     # [{"precioCompra": ..., "precioVenta": ..., ...}]
     if isinstance(puntas, list) and puntas and isinstance(puntas[0], dict):
         top = puntas[0]
-        pc = top.get("precioCompra") or top.get("PrecioCompra") or top.get("bid") or top.get("Bid")
-        pv = top.get("precioVenta") or top.get("PrecioVenta") or top.get("ask") or top.get("Ask")
+        pc = safe_float(top.get("precioCompra") or top.get("PrecioCompra") or top.get("bid") or top.get("Bid"), None)
+        pv = safe_float(top.get("precioVenta") or top.get("PrecioVenta") or top.get("ask") or top.get("Ask"), None)
         return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
 
     # Caso 2: viene directo tipo { "precioCompra":..., "precioVenta":... }
@@ -134,19 +140,23 @@ class IOLClient:
 
     def get_quote(self, ticker: str, plazo: str, mercado="bCBA"):
         """
-        Obtiene cotización. Ajustá endpoint según tu implementación.
-
-        En muchos ejemplos de IOL:
-        /api/v2/Cotizaciones/{mercado}/Titulos/{ticker}/Cotizacion?plazo=...
+        Obtiene cotización usando endpoint mobile:
+        /api/v2/{mercado}/Titulos/{ticker}/CotizacionDetalleMobile/{plazo_num}
         """
-        # plazo: "T0" / "T1"
-        # mercado: "bCBA" para BYMA (ejemplo)
+        # mapeo plazo a entero requerido por endpoint
+        plazo_key = str(plazo).strip().lower()
+        if plazo_key in {"t0", "ci", "0"}:
+            plazo_num = 0
+        elif plazo_key in {"t1", "24", "24hs", "1"}:
+            plazo_num = 1
+        else:
+            raise ValueError(f"Plazo inválido: {plazo}")
+
         if (not self.is_logged()) and self.username and self.password:
             self.login(self.username, self.password)
 
-        url = f"{self.base}/api/v2/Cotizaciones/{mercado}/Titulos/{ticker}/Cotizacion"
-        params = {"plazo": plazo.upper()}
-        r = self.session.get(url, params=params, timeout=20)
+        url = f"{self.base}/api/v2/{mercado}/Titulos/{ticker}/CotizacionDetalleMobile/{plazo_num}"
+        r = self.session.get(url, timeout=20)
         r.raise_for_status()
         return r.json()
 
@@ -172,6 +182,7 @@ w_tickers = pn.widgets.TextAreaInput(
 )
 
 btn_connect = pn.widgets.Button(name="Conectar", button_type="primary")
+btn_disconnect = pn.widgets.Button(name="Desconectar", button_type="warning")
 btn_update = pn.widgets.Button(name="Actualizar ahora", button_type="success")
 
 # Indicadores
@@ -202,6 +213,26 @@ def connect(event=None):
         status.object = f"🔴 **Error de login:** `{type(e).__name__}`"
     finally:
         spinner.value = False
+
+
+def disconnect(event=None):
+    global _auto_cb
+    w_autorefresh.value = False
+    if _auto_cb is not None:
+        try:
+            pn.state.remove_periodic_callback(_auto_cb)
+        except Exception:
+            pass
+        _auto_cb = None
+
+    iol.token = None
+    iol.token_expires_at = 0
+    iol.session.headers.pop("Authorization", None)
+
+    status.object = "🔴 **Desconectado**"
+    spinner.value = False
+    progress.visible = False
+    table.value = pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda", "Error", "Debug"])
 
 def update_quotes(event=None):
     tickers = parse_tickers(w_tickers.value)
@@ -247,6 +278,7 @@ def update_quotes(event=None):
 
         except Exception as e:
             err_msg = f"{type(e).__name__}"
+            debug = err_msg
 
         rows.append({
             "Activo": t,
@@ -288,7 +320,7 @@ def set_autorefresh(event=None):
         _auto_cb = None
 
     if w_autorefresh.value:
-        period_ms = max(5, int(w_refresh.value)) * 1000
+        period_ms = max(3, int(w_refresh.value)) * 1000
         _auto_cb = pn.state.add_periodic_callback(update_quotes, period=period_ms, start=True)
         status.object = "🟡 **Auto refresh activado**"
     else:
@@ -312,7 +344,7 @@ left = pn.Column(
     w_refresh,
     w_autorefresh,
     w_tickers,
-    pn.Row(btn_connect, btn_update),
+    pn.Row(btn_connect, btn_disconnect, btn_update),
     width=380,
 )
 

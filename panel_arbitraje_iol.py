@@ -79,11 +79,17 @@ def best_punta_from_iol_quote(js: dict):
         pv = safe_float(top.get("precioVenta") or top.get("PrecioVenta") or top.get("ask") or top.get("Ask"), None)
         return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
 
+    # Caso 2: viene directo tipo { "precioCompra":..., "precioVenta":... }
+    pc = js.get("precioCompra") or js.get("PrecioCompra") or js.get("bid") or js.get("Bid")
+    pv = js.get("precioVenta") or js.get("PrecioVenta") or js.get("ask") or js.get("Ask")
+    if pc is not None or pv is not None:
+        return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
+
     # Caso 3: viene en "cotizacion" o similar
     cot = js.get("cotizacion") or js.get("Cotizacion")
     if isinstance(cot, dict):
-        pc = safe_float(cot.get("precioCompra") or cot.get("PrecioCompra") or cot.get("bid") or cot.get("Bid"), None)
-        pv = safe_float(cot.get("precioVenta") or cot.get("PrecioVenta") or cot.get("ask") or cot.get("Ask"), None)
+        pc = cot.get("precioCompra") or cot.get("PrecioCompra") or cot.get("bid") or cot.get("Bid")
+        pv = cot.get("precioVenta") or cot.get("PrecioVenta") or cot.get("ask") or cot.get("Ask")
         moneda = moneda or cot.get("moneda") or cot.get("Moneda")
         return {"precioCompra": pc, "precioVenta": pv, "moneda": moneda}
 
@@ -166,7 +172,7 @@ w_pass = pn.widgets.PasswordInput(name="Password IOL", placeholder="********")
 w_user.value = os.getenv("IOL_USER", "")
 w_pass.value = os.getenv("IOL_PASS", "")
 w_spread_min = pn.widgets.FloatInput(name="Spread mínimo (%)", value=0.5, step=0.1)
-w_refresh = pn.widgets.IntInput(name="Refresh (seg)", value=60, step=1, start=3)
+w_refresh = pn.widgets.IntInput(name="Refresh (seg)", value=60, step=5)
 w_autorefresh = pn.widgets.Switch(name="Auto refresh", value=True)
 
 w_tickers = pn.widgets.TextAreaInput(
@@ -186,7 +192,7 @@ progress = pn.widgets.Progress(name="Progreso", value=0, max=100, visible=False)
 
 # Tabla
 table = pn.widgets.Tabulator(
-    pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda", "Error", "Debug"]),
+    pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda"]),
     height=360,
     pagination="local",
     page_size=20,
@@ -255,7 +261,6 @@ def update_quotes(event=None):
         bid_t1 = None
         moneda = None
         spread_pct = None
-        debug = ""
 
         try:
             js_t0 = iol.get_quote(t, "t0")  # CI
@@ -264,18 +269,11 @@ def update_quotes(event=None):
             p0 = best_punta_from_iol_quote(js_t0)
             p1 = best_punta_from_iol_quote(js_t1)
 
-            ask_t0 = p0.get("precioVenta")
-            bid_t1 = p1.get("precioCompra")
+            ask_t0 = safe_float(p0.get("precioVenta"), None)
+            bid_t1 = safe_float(p1.get("precioCompra"), None)
             moneda = p0.get("moneda") or p1.get("moneda")
 
-            if ask_t0 is not None and bid_t1 is not None:
-                debug = "OK"
-            elif ask_t0 is None:
-                debug = "Falta punta T0"
-            elif bid_t1 is None:
-                debug = "Falta punta T1"
-
-            if ask_t0 is not None and bid_t1 is not None and ask_t0 > 0 and bid_t1 > 0:
+            if ask_t0 is not None and bid_t1 is not None and ask_t0 > 0:
                 spread_pct = (bid_t1 / ask_t0 - 1) * 100
 
         except Exception as e:
@@ -288,28 +286,25 @@ def update_quotes(event=None):
             "Bid T1": bid_t1,
             "Spread %": spread_pct,
             "Moneda": moneda,
-            "Error": err_msg,
-            "Debug": debug,
         })
 
         progress.value = i  # barra real
 
     df = pd.DataFrame(rows)
 
-    # Mostrar siempre todos los activos, aunque no haya spread calculable
+    # Filtrado por spread mínimo (si Spread % es None => queda afuera)
     df2 = df.copy()
     df2["Spread %"] = pd.to_numeric(df2["Spread %"], errors="coerce")
+    df2 = df2[df2["Spread %"].notna()]
+    df2 = df2[df2["Spread %"] >= spread_min]
     df2["Spread %"] = df2["Spread %"].round(2)
     df2 = df2.sort_values("Spread %", ascending=False)
 
-    table.value = df2[["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda", "Error", "Debug"]].reset_index(drop=True)
-
-    # Oportunidades para contador (spread válido y por encima del mínimo)
-    opp_count = int(((df2["Spread %"].notna()) & (df2["Spread %"] >= spread_min)).sum())
+    table.value = df2[["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda"]].reset_index(drop=True)
 
     progress.visible = False
     spinner.value = False
-    status.object = f"✅ **Actualizado** — {opp_count} oportunidades (min {spread_min:.2f}%)"
+    status.object = f"✅ **Actualizado** — {len(df2)} oportunidades (min {spread_min:.2f}%)"
 
 # Auto refresh callback
 _auto_cb = None
@@ -333,7 +328,6 @@ def set_autorefresh(event=None):
 
 # Bind events
 btn_connect.on_click(connect)
-btn_disconnect.on_click(disconnect)
 btn_update.on_click(update_quotes)
 w_autorefresh.param.watch(set_autorefresh, "value")
 w_refresh.param.watch(set_autorefresh, "value")
@@ -359,3 +353,4 @@ app = pn.Row(left, table, sizing_mode="stretch_width")
 # Inicializa auto-refresh si está activado
 pn.state.onload(lambda: set_autorefresh())
 
+app.servable()

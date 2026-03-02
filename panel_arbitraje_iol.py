@@ -172,7 +172,6 @@ w_tickers = pn.widgets.TextAreaInput(
 )
 
 btn_connect = pn.widgets.Button(name="Conectar", button_type="primary")
-btn_disconnect = pn.widgets.Button(name="Desconectar", button_type="warning")
 btn_update = pn.widgets.Button(name="Actualizar ahora", button_type="success")
 
 # Indicadores
@@ -204,26 +203,6 @@ def connect(event=None):
     finally:
         spinner.value = False
 
-
-def disconnect(event=None):
-    global _auto_cb
-    w_autorefresh.value = False
-    if _auto_cb is not None:
-        try:
-            pn.state.remove_periodic_callback(_auto_cb)
-        except Exception:
-            pass
-        _auto_cb = None
-
-    iol.token = None
-    iol.token_expires_at = 0
-    iol.session.headers.pop("Authorization", None)
-
-    status.object = "🔴 **Desconectado**"
-    spinner.value = False
-    progress.visible = False
-    table.value = pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda"])
-
 def update_quotes(event=None):
     tickers = parse_tickers(w_tickers.value)
     spread_min = safe_float(w_spread_min.value, 0.0)
@@ -246,6 +225,7 @@ def update_quotes(event=None):
 
     for i, t in enumerate(tickers, start=1):
         status.object = f"⏳ **Procesando {t} ({i}/{len(tickers)})…**"
+        err_msg = None
         ask_t0 = None
         bid_t1 = None
         moneda = None
@@ -265,8 +245,8 @@ def update_quotes(event=None):
             if ask_t0 is not None and bid_t1 is not None and ask_t0 > 0:
                 spread_pct = (bid_t1 / ask_t0 - 1) * 100
 
-        except Exception:
-            pass
+        except Exception as e:
+            err_msg = f"{type(e).__name__}"
 
         rows.append({
             "Activo": t,
@@ -316,7 +296,6 @@ def set_autorefresh(event=None):
 
 # Bind events
 btn_connect.on_click(connect)
-btn_disconnect.on_click(disconnect)
 btn_update.on_click(update_quotes)
 w_autorefresh.param.watch(set_autorefresh, "value")
 w_refresh.param.watch(set_autorefresh, "value")
@@ -333,7 +312,7 @@ left = pn.Column(
     w_refresh,
     w_autorefresh,
     w_tickers,
-    pn.Row(btn_connect, btn_disconnect, btn_update),
+    pn.Row(btn_connect, btn_update),
     width=380,
 )
 

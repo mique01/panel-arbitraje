@@ -1,0 +1,9 @@
+panel>=1.4,<2.0
+bokeh>=3.4,<4.0
+pandas>=2.2,<3.0
+requests>=2.31,<3.0
+pyviz-comms>=3.0,<4.0
+linkify-it-py>=2.0,<3.0
+mdit-py-plugins>=0.4,<1.0
+markdown>=3.5,<4.0
+xyzservices>=2023.10.1

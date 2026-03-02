@@ -1,4 +1,5 @@
 # app.py
+import os
 import time
 import re
 import requests
@@ -158,6 +159,8 @@ iol = IOLClient()
 # Widgets
 w_user = pn.widgets.TextInput(name="Usuario IOL", placeholder="tu_mail@...")
 w_pass = pn.widgets.PasswordInput(name="Password IOL", placeholder="********")
+w_user.value = os.getenv("IOL_USER", "")
+w_pass.value = os.getenv("IOL_PASS", "")
 w_spread_min = pn.widgets.FloatInput(name="Spread mínimo (%)", value=0.5, step=0.1)
 w_refresh = pn.widgets.IntInput(name="Refresh (seg)", value=60, step=5)
 w_autorefresh = pn.widgets.Switch(name="Auto refresh", value=True)

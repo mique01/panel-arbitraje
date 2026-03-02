@@ -32,7 +32,8 @@ def parse_tickers(text: str):
             out.append(t)
     return out
 
-def safe_float(x, default=0.0):
+
+def safe_float(x, default=None):
     try:
         if x is None:
             return default
@@ -114,10 +115,6 @@ class IOLClient:
         self.password = None
 
     def login(self, username: str, password: str):
-        """
-        Login típico OAuth password grant (IOL).
-        Si tu auth es diferente, ajustá acá.
-        """
         url = f"{self.base}/token"
         data = {
             "grant_type": "password",
@@ -138,19 +135,43 @@ class IOLClient:
     def is_logged(self):
         return self.token is not None and time.time() < self.token_expires_at
 
+    def _normalize_plazo(self, plazo):
+        p = str(plazo).strip().lower()
+        if p in {"t0", "t1", "t2"}:
+            return p
+        raise ValueError(f"Plazo inválido: {plazo}")
+
+    def _request_quote(self, ticker: str, mercado: str, plazo_norm: str):
+        url = f"{self.base}/api/v2/{mercado}/Titulos/{ticker}/CotizacionDetalleMobile/{plazo_norm}"
+        try:
+            r = self.session.get(url, timeout=20)
+            status = r.status_code
+            try:
+                js = r.json()
+                txt = None
+            except Exception:
+                js = None
+                txt = (r.text or "")[:400]
+            return {
+                "ok": 200 <= status < 300,
+                "status_code": status,
+                "url": url,
+                "json": js,
+                "text": txt,
+                "mercado": mercado,
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "status_code": 0,
+                "url": url,
+                "json": None,
+                "text": str(e)[:400],
+                "mercado": mercado,
+            }
+
     def get_quote(self, ticker: str, plazo: str, mercado="bCBA"):
-        """
-        Obtiene cotización usando endpoint mobile:
-        /api/v2/{mercado}/Titulos/{ticker}/CotizacionDetalleMobile/{plazo_num}
-        """
-        # mapeo plazo a entero requerido por endpoint
-        plazo_key = str(plazo).strip().lower()
-        if plazo_key in {"t0", "ci", "0"}:
-            plazo_num = 0
-        elif plazo_key in {"t1", "24", "24hs", "1"}:
-            plazo_num = 1
-        else:
-            raise ValueError(f"Plazo inválido: {plazo}")
+        plazo_norm = self._normalize_plazo(plazo)
 
         if (not self.is_logged()) and self.username and self.password:
             self.login(self.username, self.password)
@@ -172,6 +193,10 @@ w_pass = pn.widgets.PasswordInput(name="Password IOL", placeholder="********")
 w_user.value = os.getenv("IOL_USER", "")
 w_pass.value = os.getenv("IOL_PASS", "")
 w_spread_min = pn.widgets.FloatInput(name="Spread mínimo (%)", value=0.5, step=0.1)
+w_refresh = pn.widgets.IntInput(name="Refresh (seg)", value=60, step=1, start=3)
+w_autorefresh = pn.widgets.Switch(name="Auto refresh", value=True)
+
+w_tickers = pn.widgets.TextAreaInput(name="Tickers (uno por línea)", value="AL30\nGD30", height=220)
 w_refresh = pn.widgets.IntInput(name="Refresh (seg)", value=60, step=5)
 w_autorefresh = pn.widgets.Switch(name="Auto refresh", value=True)
 
@@ -185,7 +210,6 @@ btn_connect = pn.widgets.Button(name="Conectar", button_type="primary")
 btn_disconnect = pn.widgets.Button(name="Desconectar", button_type="warning")
 btn_update = pn.widgets.Button(name="Actualizar ahora", button_type="success")
 
-# Indicadores
 status = pn.pane.Markdown("🔴 **Desconectado**")
 spinner = pn.indicators.LoadingSpinner(value=False, size=24)
 progress = pn.widgets.Progress(name="Progreso", value=0, max=100, visible=False)
@@ -253,32 +277,47 @@ def update_quotes(event=None):
     status.object = "⏳ **Actualizando cotizaciones…**"
 
     rows = []
+    last_fail = None
 
     for i, t in enumerate(tickers, start=1):
         status.object = f"⏳ **Procesando {t} ({i}/{len(tickers)})…**"
-        err_msg = None
-        ask_t0 = None
-        bid_t1 = None
-        moneda = None
+
+        r_t0 = iol.get_quote(t, "t0")
+        r_t1 = iol.get_quote(t, "t1")
+
+        p0 = best_punta_from_iol_quote(r_t0)
+        p1 = best_punta_from_iol_quote(r_t1)
+
+        ask_t0 = p0.get("precioVenta")
+        bid_t1 = p1.get("precioCompra")
+        qty_ask_t0 = p0.get("cantidadVenta")
+        qty_bid_t1 = p1.get("cantidadCompra")
+        moneda = p0.get("moneda") or p1.get("moneda")
+
         spread_pct = None
+        if ask_t0 is not None and bid_t1 is not None and ask_t0 > 0 and bid_t1 > 0:
+            spread_pct = (bid_t1 / ask_t0 - 1) * 100
 
-        try:
-            js_t0 = iol.get_quote(t, "t0")  # CI
-            js_t1 = iol.get_quote(t, "t1")  # 24hs
+        hint_t0 = p0.get("hint", "")
+        hint_t1 = p1.get("hint", "")
 
-            p0 = best_punta_from_iol_quote(js_t0)
-            p1 = best_punta_from_iol_quote(js_t1)
+        if r_t0.get("fallback_used"):
+            hint_t0 = f"{hint_t0} | mercado={r_t0.get('mercado')}"
+        if r_t1.get("fallback_used"):
+            hint_t1 = f"{hint_t1} | mercado={r_t1.get('mercado')}"
 
-            ask_t0 = safe_float(p0.get("precioVenta"), None)
-            bid_t1 = safe_float(p1.get("precioCompra"), None)
-            moneda = p0.get("moneda") or p1.get("moneda")
-
-            if ask_t0 is not None and bid_t1 is not None and ask_t0 > 0:
-                spread_pct = (bid_t1 / ask_t0 - 1) * 100
-
-        except Exception as e:
-            err_msg = f"{type(e).__name__}"
-            debug = err_msg
+        if (not r_t0.get("ok")) or (not r_t1.get("ok")) or ask_t0 is None or bid_t1 is None:
+            bad_resp = r_t0 if (not r_t0.get("ok") or ask_t0 is None) else r_t1
+            js = bad_resp.get("json")
+            keys_info = list(js.keys())[:10] if isinstance(js, dict) else str(type(js).__name__)
+            last_fail = {
+                "ticker": t,
+                "plazo": "t0" if bad_resp is r_t0 else "t1",
+                "status_code": bad_resp.get("status_code"),
+                "url": bad_resp.get("url"),
+                "text": bad_resp.get("text"),
+                "json_keys": keys_info,
+            }
 
         rows.append({
             "Activo": t,

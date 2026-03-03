@@ -159,7 +159,7 @@ class IOLClient:
         # Según tu doc: /CotizacionDetalleMobile/{plazo} con plazo="t0"/"t1"/"t2"
         url = f"{self.base}/api/v2/{mercado}/Titulos/{ticker}/CotizacionDetalleMobile/{plazo_norm}"
         try:
-            r = self.session.get(url, timeout=20)
+            r = self.session.get(url, timeout=20, params={"_": int(time.time() * 1000)})
             status = r.status_code
             try:
                 js = r.json()
@@ -233,7 +233,7 @@ progress = pn.widgets.Progress(name="Progreso", value=0, max=100, visible=False)
 
 table = pn.widgets.Tabulator(
     pd.DataFrame(
-        columns=["Activo", "Ask T0", "Bid T1", "Spread %", "Moneda", "HTTP_T0", "HTTP_T1", "Hint_T0", "Hint_T1", "Mercado_T0", "Mercado_T1"]
+        columns=["Activo", "Ask T0", "Bid T1", "Spread %"]
     ),
     height=360,
     pagination="local",
@@ -288,8 +288,6 @@ def update_quotes(event=None):
 
         ask_t0 = p0.get("precioVenta")
         bid_t1 = p1.get("precioCompra")
-        moneda = p0.get("moneda") or p1.get("moneda")
-
         spread_pct = None
         if ask_t0 is not None and bid_t1 is not None and ask_t0 > 0 and bid_t1 > 0:
             spread_pct = (bid_t1 / ask_t0 - 1) * 100
@@ -299,13 +297,6 @@ def update_quotes(event=None):
             "Ask T0": ask_t0,
             "Bid T1": bid_t1,
             "Spread %": spread_pct,
-            "Moneda": moneda,
-            "HTTP_T0": r_t0.get("status_code"),
-            "HTTP_T1": r_t1.get("status_code"),
-            "Hint_T0": p0.get("hint"),
-            "Hint_T1": p1.get("hint"),
-            "Mercado_T0": r_t0.get("mercado"),
-            "Mercado_T1": r_t1.get("mercado"),
         })
 
         progress.value = i
@@ -314,8 +305,10 @@ def update_quotes(event=None):
     df["Spread %"] = pd.to_numeric(df["Spread %"], errors="coerce")
     df_sorted = df.sort_values("Spread %", ascending=False, na_position="last")
 
-    # Mostrar SIEMPRE todo (debug)
-    table.value = df_sorted.reset_index(drop=True)
+    # Forzar invalidación del modelo para que Tabulator redibuje en auto-refresh
+    new_df = df_sorted.reset_index(drop=True).copy()
+    table.value = None
+    table.value = new_df
 
     # Oportunidades (para contador)
     df_opps = df_sorted[df_sorted["Spread %"].notna() & (df_sorted["Spread %"] >= spread_min)]

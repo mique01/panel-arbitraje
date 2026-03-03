@@ -257,6 +257,19 @@ table_container = pn.Column(table, sizing_mode="stretch_width")
 
 
 def set_table_value(df):
+    """Recrea Tabulator en cada refresh para evitar estados internos inválidos."""
+    global table
+    if df is None:
+        df = pd.DataFrame(columns=TABLE_COLUMNS)
+
+    # Normalizar columnas esperadas para mantener el schema estable.
+    for col in TABLE_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[TABLE_COLUMNS].copy()
+
+    table = make_table(df)
+    table_container[:] = [table]
     global table
     try:
         table.value = df
@@ -329,6 +342,7 @@ def update_quotes(event=None):
 
         df = pd.DataFrame(rows)
         if df.empty:
+            df = pd.DataFrame(columns=TABLE_COLUMNS)
             df = pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %"])
 
         df["Spread %"] = pd.to_numeric(df["Spread %"], errors="coerce")

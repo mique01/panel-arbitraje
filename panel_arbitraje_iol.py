@@ -236,16 +236,36 @@ status = pn.pane.Markdown("🔴 **Desconectado**")
 spinner = pn.indicators.LoadingSpinner(value=False, size=24)
 progress = pn.widgets.Progress(name="Progreso", value=0, max=100, visible=False)
 
-table = pn.widgets.Tabulator(
-    pd.DataFrame(
-        columns=["Activo", "Ask T0", "Bid T1", "Spread %"]
-    ),
-    height=360,
-    pagination="local",
-    page_size=20,
-    show_index=False,
-    sizing_mode="stretch_width",
-)
+TABLE_COLUMNS = ["Activo", "Ask T0", "Bid T1", "Spread %"]
+
+
+def make_table(value=None):
+    if value is None:
+        value = pd.DataFrame(columns=TABLE_COLUMNS)
+    return pn.widgets.Tabulator(
+        value,
+        height=360,
+        pagination="local",
+        page_size=20,
+        show_index=False,
+        sizing_mode="stretch_width",
+    )
+
+
+table = make_table()
+table_container = pn.Column(table, sizing_mode="stretch_width")
+
+
+def set_table_value(df):
+    global table
+    try:
+        table.value = df
+    except Exception as e:
+        # Recupero ante estados internos inválidos del DataTabulator (p. ej. UnsetValueError en recargas).
+        if type(e).__name__ != "UnsetValueError":
+            raise
+        table = make_table(df)
+        table_container[:] = [table]
 
 # =========================
 # Logic
@@ -369,7 +389,7 @@ left = pn.Column(
     width=380,
 )
 
-app = pn.Row(left, table, sizing_mode="stretch_width")
+app = pn.Row(left, table_container, sizing_mode="stretch_width")
 
 pn.state.onload(lambda: set_autorefresh())
 

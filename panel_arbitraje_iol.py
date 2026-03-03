@@ -270,6 +270,15 @@ def set_table_value(df):
 
     table = make_table(df)
     table_container[:] = [table]
+    global table
+    try:
+        table.value = df
+    except Exception as e:
+        # Recupero ante estados internos inválidos del DataTabulator (p. ej. UnsetValueError en recargas).
+        if type(e).__name__ != "UnsetValueError":
+            raise
+        table = make_table(df)
+        table_container[:] = [table]
 
 # =========================
 # Logic
@@ -334,12 +343,13 @@ def update_quotes(event=None):
         df = pd.DataFrame(rows)
         if df.empty:
             df = pd.DataFrame(columns=TABLE_COLUMNS)
+            df = pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %"])
 
         df["Spread %"] = pd.to_numeric(df["Spread %"], errors="coerce")
         df_sorted = df.sort_values("Spread %", ascending=False, na_position="last")
 
         # Evitar pasar por `None` para no desmontar el Tabulator en algunos reloads.
-        set_table_value(df_sorted.reset_index(drop=True).copy())
+        table.value = df_sorted.reset_index(drop=True).copy()
 
         # Oportunidades (para contador)
         df_opps = df_sorted[df_sorted["Spread %"].notna() & (df_sorted["Spread %"] >= spread_min)]

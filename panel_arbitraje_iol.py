@@ -224,6 +224,11 @@ w_tickers = pn.widgets.TextAreaInput(
     height=220
 )
 
+# Persistir configuración del usuario en el navegador para sobrevivir recargas.
+# No se persiste la password por seguridad.
+for _w in (w_user, w_spread_min, w_refresh, w_autorefresh, w_tickers):
+    _w.persist = True
+
 btn_connect = pn.widgets.Button(name="Conectar", button_type="primary")
 btn_update = pn.widgets.Button(name="Actualizar ahora", button_type="success")
 
@@ -231,16 +236,40 @@ status = pn.pane.Markdown("🔴 **Desconectado**")
 spinner = pn.indicators.LoadingSpinner(value=False, size=24)
 progress = pn.widgets.Progress(name="Progreso", value=0, max=100, visible=False)
 
-table = pn.widgets.Tabulator(
-    pd.DataFrame(
-        columns=["Activo", "Ask T0", "Bid T1", "Spread %"]
-    ),
-    height=360,
-    pagination="local",
-    page_size=20,
-    show_index=False,
-    sizing_mode="stretch_width",
-)
+TABLE_COLUMNS = ["Activo", "Ask T0", "Bid T1", "Spread %"]
+
+
+def make_table(value=None):
+    if value is None:
+        value = pd.DataFrame(columns=TABLE_COLUMNS)
+    return pn.widgets.Tabulator(
+        value,
+        height=360,
+        pagination="local",
+        page_size=20,
+        show_index=False,
+        sizing_mode="stretch_width",
+    )
+
+
+table = make_table()
+table_container = pn.Column(table, sizing_mode="stretch_width")
+
+
+def set_table_value(df):
+    """Recrea Tabulator en cada refresh para evitar estados internos inválidos."""
+    global table
+    if df is None:
+        df = pd.DataFrame(columns=TABLE_COLUMNS)
+
+    # Normalizar columnas esperadas para mantener el schema estable.
+    for col in TABLE_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df = df[TABLE_COLUMNS].copy()
+
+    table = make_table(df)
+    table_container[:] = [table]
 
 # =========================
 # Logic
@@ -275,47 +304,51 @@ def update_quotes(event=None):
     progress.max = len(tickers)
     status.object = "⏳ **Actualizando cotizaciones…**"
 
-    rows = []
+    try:
+        rows = []
 
-    for i, t in enumerate(tickers, start=1):
-        status.object = f"⏳ **Procesando {t} ({i}/{len(tickers)})…**"
+        for i, t in enumerate(tickers, start=1):
+            status.object = f"⏳ **Procesando {t} ({i}/{len(tickers)})…**"
 
-        r_t0 = iol.get_quote(t, "t0")  # CI
-        r_t1 = iol.get_quote(t, "t1")  # 24hs
+            r_t0 = iol.get_quote(t, "t0")  # CI
+            r_t1 = iol.get_quote(t, "t1")  # 24hs
 
-        p0 = best_punta_from_iol_quote(r_t0)
-        p1 = best_punta_from_iol_quote(r_t1)
+            p0 = best_punta_from_iol_quote(r_t0)
+            p1 = best_punta_from_iol_quote(r_t1)
 
-        ask_t0 = p0.get("precioVenta")
-        bid_t1 = p1.get("precioCompra")
-        spread_pct = None
-        if ask_t0 is not None and bid_t1 is not None and ask_t0 > 0 and bid_t1 > 0:
-            spread_pct = (bid_t1 / ask_t0 - 1) * 100
+            ask_t0 = p0.get("precioVenta")
+            bid_t1 = p1.get("precioCompra")
+            spread_pct = None
+            if ask_t0 is not None and bid_t1 is not None and ask_t0 > 0 and bid_t1 > 0:
+                spread_pct = (bid_t1 / ask_t0 - 1) * 100
 
-        rows.append({
-            "Activo": t,
-            "Ask T0": ask_t0,
-            "Bid T1": bid_t1,
-            "Spread %": spread_pct,
-        })
+            rows.append({
+                "Activo": t,
+                "Ask T0": ask_t0,
+                "Bid T1": bid_t1,
+                "Spread %": spread_pct,
+            })
 
-        progress.value = i
+            progress.value = i
 
-    df = pd.DataFrame(rows)
-    df["Spread %"] = pd.to_numeric(df["Spread %"], errors="coerce")
-    df_sorted = df.sort_values("Spread %", ascending=False, na_position="last")
+        df = pd.DataFrame(rows)
+        if df.empty:
+            df = pd.DataFrame(columns=TABLE_COLUMNS)
 
-    # Forzar invalidación del modelo para que Tabulator redibuje en auto-refresh
-    new_df = df_sorted.reset_index(drop=True).copy()
-    table.value = None
-    table.value = new_df
+        df["Spread %"] = pd.to_numeric(df["Spread %"], errors="coerce")
+        df_sorted = df.sort_values("Spread %", ascending=False, na_position="last")
 
-    # Oportunidades (para contador)
-    df_opps = df_sorted[df_sorted["Spread %"].notna() & (df_sorted["Spread %"] >= spread_min)]
+        # Evitar pasar por `None` para no desmontar el Tabulator en algunos reloads.
+        set_table_value(df_sorted.reset_index(drop=True).copy())
 
-    progress.visible = False
-    spinner.value = False
-    status.object = f"✅ **Actualizado** — {len(df_opps)} oportunidades (min {spread_min:.2f}%) | Total: {len(df_sorted)}"
+        # Oportunidades (para contador)
+        df_opps = df_sorted[df_sorted["Spread %"].notna() & (df_sorted["Spread %"] >= spread_min)]
+        status.object = f"✅ **Actualizado** — {len(df_opps)} oportunidades (min {spread_min:.2f}%) | Total: {len(df_sorted)}"
+    except Exception as e:
+        status.object = f"🔴 **Error al actualizar:** `{type(e).__name__}` — {one_line(e)}"
+    finally:
+        progress.visible = False
+        spinner.value = False
 
 
 # Auto refresh callback
@@ -360,7 +393,7 @@ left = pn.Column(
     width=380,
 )
 
-app = pn.Row(left, table, sizing_mode="stretch_width")
+app = pn.Row(left, table_container, sizing_mode="stretch_width")
 
 pn.state.onload(lambda: set_autorefresh())
 

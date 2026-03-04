@@ -1,9 +1,9 @@
-import os
 import time
 import re
 import requests
 import pandas as pd
 import panel as pn
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 pn.extension("tabulator")
 
@@ -11,7 +11,7 @@ pn.extension("tabulator")
 # Helpers
 # =========================
 
-def parse_tickers(text: str):
+def parse_tickers(text):
     if not text:
         return []
 
@@ -23,47 +23,29 @@ def parse_tickers(text: str):
     for x in raw:
         t = x.strip().upper()
 
-        if not t:
-            continue
-
-        if t not in seen:
+        if t and t not in seen:
             seen.add(t)
             out.append(t)
 
     return out
 
 
-def safe_float(x, default=None):
-    try:
-        if x is None:
-            return default
-
-        if isinstance(x, str) and x.strip() == "":
-            return default
-
-        return float(x)
-
-    except Exception:
-        return default
-
-
-def one_line(text):
-    return str(text).replace("\n", " ").replace("\r", " ")[:200]
+def beep():
+    print("\a")
 
 
 # =========================
-# IOL API
+# IOL Client
 # =========================
 
 class IOLClient:
 
     def __init__(self):
+
         self.base = "https://api.invertironline.com"
         self.session = requests.Session()
         self.token = None
         self.token_exp = 0
-        self.username = None
-        self.password = None
 
     def login(self, user, password):
 
@@ -85,15 +67,15 @@ class IOLClient:
 
         self.token_exp = time.time() + js.get("expires_in", 900) - 30
 
-        self.session.headers.update(
-            {"Authorization": f"Bearer {self.token}"}
-        )
+        self.session.headers.update({
+            "Authorization": f"Bearer {self.token}"
+        })
 
-        self.username = user
-        self.password = password
 
     def is_logged(self):
+
         return self.token and time.time() < self.token_exp
+
 
     def get_quote(self, ticker, plazo):
 
@@ -110,13 +92,20 @@ class IOLClient:
 iol = IOLClient()
 
 # =========================
-# Panel Widgets
+# Widgets
 # =========================
 
 w_user = pn.widgets.TextInput(name="Usuario IOL")
+
 w_pass = pn.widgets.PasswordInput(name="Password")
 
-w_spread = pn.widgets.FloatInput(name="Spread mínimo (%)", value=0.5)
+w_tipo = pn.widgets.Select(
+    name="Tipo de activo",
+    options=["Bonos","Letras","Acciones/CEDEAR","Opciones"],
+    value="Bonos"
+)
+
+w_spread = pn.widgets.FloatInput(name="Spread Neto mínimo (%)", value=0.05)
 
 w_refresh = pn.widgets.IntInput(name="Refresh (seg)", value=60)
 
@@ -134,17 +123,46 @@ btn_update = pn.widgets.Button(name="Actualizar", button_type="success")
 
 status = pn.pane.Markdown("🔴 Desconectado")
 
-spinner = pn.indicators.LoadingSpinner(value=False, size=20)
+spinner = pn.indicators.LoadingSpinner(value=False)
 
-progress = pn.widgets.Progress(value=0, max=100)
-
-TABLE_COLUMNS = ["Activo", "Ask T0", "Bid T1", "Spread %"]
+TABLE_COLUMNS = [
+"Activo",
+"Ask T0",
+"Bid T1",
+"Spread %",
+"Spread Neto %",
+"TNA %"
+]
 
 table = pn.widgets.Tabulator(
     pd.DataFrame(columns=TABLE_COLUMNS),
-    height=350,
-    show_index=False
+    height=450,
+    show_index=False,
+    sizing_mode="stretch_width"
 )
+
+# =========================
+# Comisiones ida + vuelta
+# =========================
+
+def get_comision():
+
+    tipo = w_tipo.value
+
+    if tipo == "Bonos":
+        return 0.32
+
+    if tipo == "Letras":
+        return 0.302
+
+    if tipo == "Acciones/CEDEAR":
+        return 0.484
+
+    if tipo == "Opciones":
+        return 0.847
+
+    return 0
+
 
 # =========================
 # Login
@@ -158,11 +176,11 @@ def connect(event=None):
 
         iol.login(w_user.value, w_pass.value)
 
-        status.object = "🟢 Conectado"
+        status.object = "🟢 Conectado a IOL"
 
     except Exception as e:
 
-        status.object = f"🔴 Error login: {one_line(e)}"
+        status.object = f"🔴 Error login: {e}"
 
     spinner.value = False
 
@@ -174,6 +192,23 @@ btn_connect.on_click(connect)
 # =========================
 
 _is_updating = False
+
+
+def fetch_ticker(t):
+
+    q0 = iol.get_quote(t,"t0")
+    q1 = iol.get_quote(t,"t1")
+
+    ask = None
+    bid = None
+
+    if "puntas" in q0 and q0["puntas"]:
+        ask = q0["puntas"][0].get("precioVenta")
+
+    if "puntas" in q1 and q1["puntas"]:
+        bid = q1["puntas"][0].get("precioCompra")
+
+    return t, ask, bid
 
 
 def update_quotes(event=None):
@@ -191,52 +226,63 @@ def update_quotes(event=None):
 
         tickers = parse_tickers(w_tickers.value)
 
-        spread_min = safe_float(w_spread.value, 0)
+        comision = get_comision()
 
         rows = []
 
-        for t in tickers:
+        oportunidades = 0
 
-            q0 = iol.get_quote(t, "t0")
+        with ThreadPoolExecutor(max_workers=12) as executor:
 
-            q1 = iol.get_quote(t, "t1")
+            futures = [executor.submit(fetch_ticker,t) for t in tickers]
 
-            ask = None
-            bid = None
+            for future in as_completed(futures):
 
-            if "puntas" in q0 and q0["puntas"]:
-                ask = q0["puntas"][0].get("precioVenta")
+                t, ask, bid = future.result()
 
-            if "puntas" in q1 and q1["puntas"]:
-                bid = q1["puntas"][0].get("precioCompra")
+                spread = None
+                spread_neto = None
+                tna = None
 
-            spread = None
+                if ask and bid and ask > 0 and bid > 0:
 
-            if ask and bid:
-                spread = (bid / ask - 1) * 100
+                    spread = round((bid/ask-1)*100,2)
 
-            rows.append({
-                "Activo": t,
-                "Ask T0": ask,
-                "Bid T1": bid,
-                "Spread %": spread
-            })
+                    spread_neto = round(spread-comision,2)
+
+                    tna = round(spread_neto*365,2)
+
+                    if spread_neto >= w_spread.value:
+                        oportunidades += 1
+
+                rows.append({
+                    "Activo":t,
+                    "Ask T0":ask,
+                    "Bid T1":bid,
+                    "Spread %":spread,
+                    "Spread Neto %":spread_neto,
+                    "TNA %":tna
+                })
+
 
         df = pd.DataFrame(rows)
 
         if not df.empty:
 
-            df["Spread %"] = pd.to_numeric(df["Spread %"], errors="coerce")
+            df["Spread Neto %"] = pd.to_numeric(df["Spread Neto %"], errors="coerce")
 
-            df = df.sort_values("Spread %", ascending=False)
+            df = df.sort_values("Spread Neto %",ascending=False)
 
         table.value = df.reset_index(drop=True)
 
-        status.object = f"✅ Actualizado ({len(df)})"
+        if oportunidades > 0:
+            beep()
+
+        status.object = f"✅ Actualizado | {oportunidades} oportunidades"
 
     except Exception as e:
 
-        status.object = f"🔴 Error: {one_line(e)}"
+        status.object = f"🔴 Error: {e}"
 
     spinner.value = False
 
@@ -246,17 +292,44 @@ def update_quotes(event=None):
 btn_update.on_click(update_quotes)
 
 # =========================
+# Auto refresh
+# =========================
+
+_auto_cb = None
+
+
+def set_autorefresh(event=None):
+
+    global _auto_cb
+
+    if _auto_cb:
+        pn.state.remove_periodic_callback(_auto_cb)
+
+    if w_auto.value:
+
+        _auto_cb = pn.state.add_periodic_callback(
+            update_quotes,
+            period=w_refresh.value*1000
+        )
+
+
+w_auto.param.watch(set_autorefresh,"value")
+w_refresh.param.watch(set_autorefresh,"value")
+
+# =========================
 # Layout
 # =========================
 
 left = pn.Column(
 
-    pn.pane.Markdown("## Arbitraje CI → 24hs"),
+    pn.pane.Markdown("## 🔎 Arbitraje CI → 24hs"),
 
-    pn.Row(status, spinner),
+    pn.Row(status,spinner),
 
     w_user,
     w_pass,
+
+    w_tipo,
 
     w_spread,
 
@@ -265,9 +338,11 @@ left = pn.Column(
 
     w_tickers,
 
-    pn.Row(btn_connect, btn_update),
+    pn.Row(btn_connect,btn_update),
 
     width=350
 )
 
-app = pn.Row(left, table, sizing_mode="stretch_width")
+app = pn.Row(left,table,sizing_mode="stretch_width")
+
+pn.state.onload(lambda: set_autorefresh())

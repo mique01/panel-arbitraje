@@ -258,7 +258,6 @@ table_container = pn.Column(table, sizing_mode="stretch_width")
 
 def set_table_value(df):
     """Recrea Tabulator en cada refresh para evitar estados internos inválidos."""
-    global table
     if df is None:
         df = pd.DataFrame(columns=TABLE_COLUMNS)
 
@@ -343,7 +342,6 @@ def update_quotes(event=None):
         df = pd.DataFrame(rows)
         if df.empty:
             df = pd.DataFrame(columns=TABLE_COLUMNS)
-            df = pd.DataFrame(columns=["Activo", "Ask T0", "Bid T1", "Spread %"])
 
         df["Spread %"] = pd.to_numeric(df["Spread %"], errors="coerce")
         df_sorted = df.sort_values("Spread %", ascending=False, na_position="last")

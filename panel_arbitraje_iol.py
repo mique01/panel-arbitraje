@@ -252,6 +252,7 @@ def make_table(value=None):
     )
 
 
+table_container = pn.Column(make_table(), sizing_mode="stretch_width")
 table = make_table()
 table_container = pn.Column(table, sizing_mode="stretch_width")
 
@@ -267,6 +268,7 @@ def set_table_value(df):
             df[col] = None
     df = df[TABLE_COLUMNS].copy()
 
+    table_container[:] = [make_table(df)]
     table = make_table(df)
     table_container[:] = [table]
     global table
@@ -294,23 +296,24 @@ def connect(event=None):
         spinner.value = False
 
 
+
+# Evita solapamiento entre auto-refresh y click manual.
+_is_updating = False
+
+
 def update_quotes(event=None):
-    tickers = parse_tickers(w_tickers.value)
-    spread_min = safe_float(w_spread_min.value, 0.0)
-
-    if not iol.is_logged():
-        status.object = "🔴 **No estás conectado a IOL.** Tocá **Conectar**."
+    global _is_updating
+    if _is_updating:
         return
+    _is_updating = True
 
-    if not tickers:
-        status.object = "⚠️ **No hay tickers cargados.**"
-        return
+    try:
+        tickers = parse_tickers(w_tickers.value)
+        spread_min = safe_float(w_spread_min.value, 0.0)
 
-    spinner.value = True
-    progress.visible = True
-    progress.value = 0
-    progress.max = len(tickers)
-    status.object = "⏳ **Actualizando cotizaciones…**"
+        if not iol.is_logged():
+            status.object = "🔴 **No estás conectado a IOL.** Tocá **Conectar**."
+            return
 
     try:
         rows = []
@@ -357,6 +360,7 @@ def update_quotes(event=None):
     finally:
         progress.visible = False
         spinner.value = False
+        _is_updating = False
 
 
 # Auto refresh callback

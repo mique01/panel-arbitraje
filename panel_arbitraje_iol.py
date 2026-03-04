@@ -253,6 +253,8 @@ def make_table(value=None):
 
 
 table_container = pn.Column(make_table(), sizing_mode="stretch_width")
+table = make_table()
+table_container = pn.Column(table, sizing_mode="stretch_width")
 
 
 def set_table_value(df):
@@ -267,6 +269,17 @@ def set_table_value(df):
     df = df[TABLE_COLUMNS].copy()
 
     table_container[:] = [make_table(df)]
+    table = make_table(df)
+    table_container[:] = [table]
+    global table
+    try:
+        table.value = df
+    except Exception as e:
+        # Recupero ante estados internos inválidos del DataTabulator (p. ej. UnsetValueError en recargas).
+        if type(e).__name__ != "UnsetValueError":
+            raise
+        table = make_table(df)
+        table_container[:] = [table]
 
 # =========================
 # Logic
@@ -302,16 +315,7 @@ def update_quotes(event=None):
             status.object = "🔴 **No estás conectado a IOL.** Tocá **Conectar**."
             return
 
-        if not tickers:
-            status.object = "⚠️ **No hay tickers cargados.**"
-            return
-
-        spinner.value = True
-        progress.visible = True
-        progress.value = 0
-        progress.max = len(tickers)
-        status.object = "⏳ **Actualizando cotizaciones…**"
-
+    try:
         rows = []
 
         for i, t in enumerate(tickers, start=1):
@@ -346,7 +350,7 @@ def update_quotes(event=None):
         df_sorted = df.sort_values("Spread %", ascending=False, na_position="last")
 
         # Evitar pasar por `None` para no desmontar el Tabulator en algunos reloads.
-        set_table_value(df_sorted.reset_index(drop=True).copy())
+        table.value = df_sorted.reset_index(drop=True).copy()
 
         # Oportunidades (para contador)
         df_opps = df_sorted[df_sorted["Spread %"].notna() & (df_sorted["Spread %"] >= spread_min)]

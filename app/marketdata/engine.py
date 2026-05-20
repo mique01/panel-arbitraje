@@ -40,6 +40,14 @@ class MarketDataEngine:
 
     def bootstrap_watchlist(self) -> dict[str, Any]:
         watchlist = self.repository.get_active_watchlist()
+        underlying_symbol = watchlist["underlying_symbol"]
+        if underlying_symbol:
+            seed_bars = self.repository.get_recent_bars(
+                underlying_symbol,
+                limit=int(self.repository.get_strategy_settings().get("underlying_bar_history_limit", 59)),
+            )
+            if seed_bars:
+                self.bar_accumulator.hydrate_closed_bars(underlying_symbol, seed_bars)
         products = []
         symbols = [watchlist["underlying_symbol"], watchlist["active_call_symbol"], watchlist["active_put_symbol"]]
         symbols.extend(watchlist["monitored_symbols"])

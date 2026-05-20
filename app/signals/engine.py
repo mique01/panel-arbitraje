@@ -25,13 +25,14 @@ class SignalEngine:
         self,
         underlying: InstrumentSnapshot,
         option: InstrumentSnapshot,
-        bars,
+        closed_bars,
+        current_bar,
         option_side: str,
     ) -> SignalDecision | None:
         if not option.symbol:
             return None
-        bollinger = self.bollinger.compute(bars)
-        anti_trend = self.anti_trend.evaluate(list(bars), bollinger)
+        bollinger = self.bollinger.compute(closed_bars)
+        anti_trend = self.anti_trend.evaluate(list(closed_bars), bollinger)
         if anti_trend["blocked"]:
             return None
 
@@ -52,17 +53,22 @@ class SignalEngine:
         last_close = bollinger.get("last_close")
         upper_band = bollinger.get("upper_band")
         lower_band = bollinger.get("lower_band")
-        if last_close is None:
+        if last_close is None or upper_band is None or lower_band is None:
             return None
 
         is_call = option_side == "CALL"
-        touch_ok = bool(bollinger.get("touch_lower")) if is_call else bool(bollinger.get("touch_upper"))
+        live_low = current_bar.low if current_bar is not None else underlying.last_price
+        live_high = current_bar.high if current_bar is not None else underlying.last_price
+        live_price = underlying.last_price
+        touch_ok = (live_low is not None and live_low <= lower_band) if is_call else (
+            live_high is not None and live_high >= upper_band
+        )
         if not touch_ok:
             tolerance = float(self.settings["bollinger_touch_tolerance_pct"])
-            if is_call and lower_band:
-                touch_ok = last_close <= lower_band * (1 + tolerance)
-            elif not is_call and upper_band:
-                touch_ok = last_close >= upper_band * (1 - tolerance)
+            if is_call and live_price is not None:
+                touch_ok = live_price <= lower_band * (1 + tolerance)
+            elif not is_call and live_price is not None:
+                touch_ok = live_price >= upper_band * (1 - tolerance)
         if not touch_ok:
             return None
 
@@ -84,7 +90,7 @@ class SignalEngine:
         if absorption <= 0.1:
             return None
 
-        score = self._score(bollinger, underlying_features, option_features, option, is_call)
+        score = self._score(bollinger, underlying_features, option_features, is_call)
         if score < float(self.settings["signal_score_threshold"]):
             return None
 
@@ -105,7 +111,7 @@ class SignalEngine:
             },
         )
 
-    def _score(self, bollinger, underlying_features, option_features, option: InstrumentSnapshot, is_call: bool) -> float:
+    def _score(self, bollinger, underlying_features, option_features, is_call: bool) -> float:
         weights = self.settings["signal_weights"]
         spread_pct = float(option_features.get("spread_pct") or 0.0)
         spread_quality = max(
@@ -116,7 +122,7 @@ class SignalEngine:
         pressure = float(underlying_features.get("pressure") or 0.0)
         pressure_score = pressure if is_call else -pressure
         pressure_score = max(0.0, min(1.0, (pressure_score + 1.0) / 2.0))
-        liquidity = min(option.bid_volume() / 50.0, 1.0)
+        liquidity = min((option.bid_volume() if isinstance(option_features, dict) else 0.0) / 50.0, 1.0)
         liquidity = max(liquidity, min(float(option_features.get("bid_volume_top_n") or 0.0) / 50.0, 1.0))
         reversion_speed = min(float(underlying_features.get("absorption_score") or 0.0), 1.0)
         bollinger_context = 1.0 if ((bollinger.get("touch_lower") if is_call else bollinger.get("touch_upper"))) else 0.6

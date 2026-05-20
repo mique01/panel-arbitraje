@@ -230,6 +230,28 @@ class PersistenceService:
             for row in rows[59:]:
                 session.delete(row)
 
+    def get_recent_bars(self, symbol: str, limit: int = 59) -> list[Bar]:
+        with self.session_scope() as session:
+            rows = session.scalars(
+                select(Bar5m)
+                .where(Bar5m.symbol == symbol)
+                .order_by(desc(Bar5m.bar_time))
+                .limit(limit)
+            ).all()
+            ordered = list(reversed(rows))
+            return [
+                Bar(
+                    symbol=row.symbol,
+                    bar_time=row.bar_time,
+                    open=row.open,
+                    high=row.high,
+                    low=row.low,
+                    close=row.close,
+                    volume=row.volume,
+                )
+                for row in ordered
+            ]
+
     def persist_signal(self, signal: SignalDecision) -> None:
         with self.session_scope() as session:
             session.add(

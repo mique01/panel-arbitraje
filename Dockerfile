@@ -9,4 +9,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["panel", "serve", "app.py", "--address", "0.0.0.0", "--port", "8080", "--num-procs", "1", "--allow-websocket-origin=*"]
+CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8080"]

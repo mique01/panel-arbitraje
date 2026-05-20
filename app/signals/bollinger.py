@@ -109,3 +109,6 @@ class BarAccumulator:
 
     def current_bar(self, symbol: str) -> Bar | None:
         return self._open_bars.get(symbol)
+
+    def hydrate_closed_bars(self, symbol: str, bars: Iterable[Bar]) -> None:
+        self._bars[symbol] = deque(bars, maxlen=self.max_bars)

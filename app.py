@@ -1,5 +1,6 @@
-"""Entrada principal para despliegue con `panel serve app.py`."""
+"""Compatibility entrypoint for direct Panel serving."""
 
-from panel_arbitraje_iol import app
+from app.dashboard.app import build_dashboard
 
-app.servable()
+dashboard = build_dashboard()
+dashboard.servable()

@@ -1,8 +1,15 @@
 services:
   - type: web
-    name: panel-arbitraje
+    name: ggal-microscalping-web
     env: python
-    plan: free
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: ./start.sh
+    autoDeploy: true
+  - type: worker
+    name: ggal-microscalping-worker
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.marketdata.worker
     autoDeploy: true

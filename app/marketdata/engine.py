@@ -29,7 +29,9 @@ class MarketDataEngine:
         self.ws_client = PrimaryWebSocketClient(settings, self.auth_client, self.queue)
         self.analyzer = OrderBookAnalyzer(depth=settings.primary_book_depth)
         self.tape_builder = TradeTapeBuilder()
-        self.bar_accumulator = BarAccumulator()
+        self.bar_accumulator = BarAccumulator(
+            max_bars=int(repository.get_strategy_settings().get("underlying_bar_history_limit", 59))
+        )
         strategy_settings = repository.get_strategy_settings()
         self.signal_engine = SignalEngine(strategy_settings)
         self.paper_engine = PaperTradingEngine(strategy_settings)
@@ -146,7 +148,8 @@ class MarketDataEngine:
         if underlying is None:
             return
 
-        bars = self.bar_accumulator.history(underlying_symbol)
+        closed_bars = self.bar_accumulator.closed_history(underlying_symbol)
+        current_bar = self.bar_accumulator.current_bar(underlying_symbol)
         for option_symbol, option_side in [
             (watchlist["active_call_symbol"], "CALL"),
             (watchlist["active_put_symbol"], "PUT"),
@@ -156,7 +159,7 @@ class MarketDataEngine:
             option = self.snapshots.get(option_symbol)
             if option is None:
                 continue
-            signal = self.signal_engine.evaluate(underlying, option, bars, option_side)
+            signal = self.signal_engine.evaluate(underlying, option, closed_bars, current_bar, option_side)
             if signal and signal.signal_id not in self.signals:
                 self.signals[signal.signal_id] = signal
                 self.repository.persist_signal(signal)

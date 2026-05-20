@@ -10,6 +10,7 @@ from typing import Any
 DEFAULT_STRATEGY_SETTINGS: dict[str, Any] = {
     "bollinger_window": 20,
     "bollinger_std": 2.0,
+    "underlying_bar_history_limit": 59,
     "bollinger_touch_tolerance_pct": 0.0025,
     "book_depth": 5,
     "signal_score_threshold": 70.0,

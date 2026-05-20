@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable
 
 import pandas as pd
@@ -76,7 +76,7 @@ class BollingerEngine:
 
 
 class BarAccumulator:
-    def __init__(self, max_bars: int = 128):
+    def __init__(self, max_bars: int = 59):
         self.max_bars = max_bars
         self._bars: dict[str, deque[Bar]] = {}
         self._open_bars: dict[str, Bar] = {}
@@ -104,9 +104,8 @@ class BarAccumulator:
         self._open_bars[symbol] = Bar(symbol, bucket, price, price, price, price, size or 0.0)
         return closed
 
-    def history(self, symbol: str) -> list[Bar]:
-        bars = list(self._bars.get(symbol, ()))
-        current = self._open_bars.get(symbol)
-        if current:
-            bars.append(current)
-        return bars
+    def closed_history(self, symbol: str) -> list[Bar]:
+        return list(self._bars.get(symbol, ()))
+
+    def current_bar(self, symbol: str) -> Bar | None:
+        return self._open_bars.get(symbol)
